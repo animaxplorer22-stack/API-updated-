@@ -1,0 +1,31 @@
+from fastapi import Request, HTTPException
+from starlette.middleware.base import BaseHTTPMiddleware
+from collections import defaultdict
+import time
+
+class RateLimitMiddleware(BaseHTTPMiddleware):
+    def __init__(self, app):
+        super().__init__(app)
+        self.requests = defaultdict(list)
+    
+    def _get_identifier(self, request: Request) -> str:
+        api_key = request.headers.get("X-API-Key")
+        if api_key:
+            return f"key:{api_key[:16]}"
+        return f"ip:{request.client.host}"
+    
+    async def dispatch(self, request: Request, call_next):
+        identifier = self._get_identifier(request)
+        current_time = time.time()
+        minute_ago = current_time - 60
+        
+        self.requests[identifier] = [t for t in self.requests[identifier] if t > minute_ago]
+        
+        if len(self.requests[identifier]) >= 60:
+            raise HTTPException(status_code=429, detail="Rate limit exceeded. 60 requests per minute.")
+        
+        self.requests[identifier].append(current_time)
+        response = await call_next(request)
+        response.headers["X-RateLimit-Limit"] = "60"
+        response.headers["X-RateLimit-Remaining"] = str(60 - len(self.requests[identifier]))
+        return response
